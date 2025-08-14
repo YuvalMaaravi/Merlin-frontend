@@ -62,16 +62,17 @@ try {
 const buildDir = path.join(__dirname, 'build');
 if (fs.existsSync(buildDir)) {
   app.use(express.static(buildDir));
-  // SPA fallback (avoid intercepting API)
-  app.get('*', (req, res) => {
-    if (req.path.startsWith('/api/')) {
-      return res.status(404).json({ message: 'API route not found' });
+
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+      return res.sendFile(path.join(buildDir, 'index.html'));
     }
-    res.sendFile(path.join(buildDir, 'index.html'));
+    next();
   });
 } else {
   console.log('No frontend build directory found. Skipping static serving.');
 }
+
 
 // ---- Cron (opt-in, starts after Mongo is ready) ----
 if (process.env.ENABLE_CRON === 'true') {
