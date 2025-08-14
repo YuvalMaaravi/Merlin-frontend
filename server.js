@@ -6,52 +6,81 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
+const fs = require('fs');
 
-// Import route handlers
+// Load .env only in development
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
+// ---- Sanity checks for required envs ----
+const REQUIRED_VARS = [
+  'MONGODB_URI',
+  'JWT_SECRET',
+  'RAPIDAPI_KEY',
+  'OPENAI_API_KEY',
+  'SENDGRID_API_KEY',
+  'SENDER_EMAIL',
+];
+
+const missing = REQUIRED_VARS.filter((k) => !process.env[k]);
+if (missing.length) {
+  console.error('Missing required env vars:', missing.join(', '));
+  process.exit(1);
+}
+
+// ---- App setup ----
+const app = express();
+app.use(express.json());
+
+// Configure CORS
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
+app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
+
+// ---- MongoDB connection ----
+const MONGODB_URI = process.env.MONGODB_URI;
+console.log('Connecting to MongoDB…');
+mongoose
+  .connect(MONGODB_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch((err) => {
+    console.error('MongoDB connection error:', err?.message || err);
+    process.exit(1);
+  });
+
+// ---- Routes ----
 const authRoutes = require('./routes/auth');
 const trackerRoutes = require('./routes/tracker');
 const babyRoutes = require('./routes/babyCheck');
 
-// MongoDB connection URI (from .env)
-const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGODB_URI;
+app.use('/api/auth', authRoutes);
+app.use('/api/tracker', trackerRoutes);
+app.use('/api/babycheck', babyRoutes);
 
-const app = express();
-// Parse JSON bodies
-app.use(express.json());
-// Enable CORS for frontend
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
-// Serve static files from the React app
-app.use(express.static(path.join(__dirname, 'build')));
+// ---- Serve React build (if present) ----
+const buildDir = path.join(__dirname, 'build');
+if (fs.existsSync(buildDir)) {
+  app.use(express.static(buildDir));
+  // SPA fallback for non-API routes
+  app.get('*', (req, res) => {
+    // avoid catching API routes
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ message: 'API route not found' });
+    }
+    res.sendFile(path.join(buildDir, 'index.html'));
+  });
+} else {
+  console.log('No frontend build directory found. Skipping static serving.');
+}
 
-// Connect to MongoDB
-console.log('Connecting to MongoDB…');
-(async () => {
-  try {
-    // Connect using Mongoose
-    await mongoose.connect(MONGODB_URI);
-    console.log('MongoDB connected');
-  } catch (err) {
-    console.error('MongoDB connection error:', err.message || err);
-    process.exit(1);
-  }
-})();
+// ---- Cron / Scheduler ----
+// Import registers the cron schedule. Optionally run an immediate check once on boot.
+const cronSvc = require('./services/cron');
+// Optional: run one pass at startup (comment out if you don’t want this)
+// cronSvc.checkTrackers();
 
-// Register API routes
-app.use('/api/auth', authRoutes);      // Auth endpoints
-app.use('/api/tracker', trackerRoutes); // Tracker endpoints
-app.use('/api/babycheck', babyRoutes);  // BabyCheck endpoints
-
-// Serve React index.html for any non-API route (SPA fallback)
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'build', 'index.html'));
-});
-
-// Start cron job for tracker checks (runs every minute)
-require('./services/cron').checkTrackers();
-
-// Start server
+// ---- Start server ----
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
 });
